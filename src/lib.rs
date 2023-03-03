@@ -6,13 +6,14 @@ use std::{
 
 use num_traits::Num;
 
+/// List all the possibles errors that could occurs.
 #[derive(Debug)]
 pub enum ErrorReadMtx {
     IoError(io::Error),
     EarlyEOF,
     EarlyBannerEnd,
     EarlyLineEnd,
-    EarlySizesHeaderEOF,
+    EarlySizesHeaderEnd,
     UnsupportedSym(String),
     UnsupportedNumType(String),
     UnsupportedLayout(String),
@@ -25,6 +26,10 @@ impl From<io::Error> for ErrorReadMtx {
     }
 }
 
+/// Symmetry information in the matrix market banner.
+/// Currently we dont support all of the info available in the format.
+/// Because we dont handle complex numbers.
+/// Feel free to contribute and add the missing support for those numbers.
 pub enum SymInfo {
     General,
     Symmetric,
@@ -41,13 +46,20 @@ impl FromStr for SymInfo {
     }
 }
 
+/// The main enum of this crate, corresponding to the 2 kind of usage of mtx files.
+/// Both contains a first line with dimensions.
+/// Dense is a list of numbers.
+/// Sparse is a list of coordinates and values.
 pub enum MtxData<T: Num, const NDIM: usize = 2> {
     Dense([usize; NDIM], Vec<T>, SymInfo),
     Sparse([usize; NDIM], Vec<[usize; NDIM]>, Vec<T>, SymInfo),
 }
-const COMMENT: char = '%';
 
 impl<T: Num, const NDIM: usize> MtxData<T, NDIM> {
+    /// Build a `MtxData` from a matrix market (usually .mtx) file.
+    /// It could fail for many reasons but for example:
+    /// - File doesn't match the matrix market format.
+    /// - an IO error (file not found etc.)
     pub fn from_file(path: &str) -> Result<Self, ErrorReadMtx> {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
@@ -56,7 +68,7 @@ impl<T: Num, const NDIM: usize> MtxData<T, NDIM> {
         skip_comments(&mut reader, &mut line)?;
         let (dims, nnz) = parse_sizes(&mut line)?;
         if is_sparse {
-            let nnz = nnz.ok_or(ErrorReadMtx::EarlySizesHeaderEOF)?;
+            let nnz = nnz.ok_or(ErrorReadMtx::EarlySizesHeaderEnd)?;
             let (indices, values) = parse_sparse_coo(&mut reader, &mut line, nnz)?;
             Ok(MtxData::Sparse(dims, indices, values, sym))
         } else {
@@ -74,13 +86,15 @@ fn parse_sparse_coo<T: Num, const NDIM: usize>(
 ) -> Result<(Vec<[usize; NDIM]>, Vec<T>), ErrorReadMtx> {
     let mut values: Vec<T> = Vec::with_capacity(nnz);
     let mut indices: Vec<[usize; NDIM]> = Vec::with_capacity(nnz);
-    let mut n = reader.read_line(buf)?;
-    while n > 0 {
+    for _ in 0..nnz {
+        let n = reader.read_line(buf)?;
+        if n == 0 {
+            return Err(ErrorReadMtx::EarlyEOF);
+        }
         let (coords, val) = parse_coords_val(&buf)?;
         indices.push(coords);
         values.push(val);
         buf.clear();
-        n = reader.read_line(buf)?;
     }
     Ok((indices, values))
 }
@@ -90,9 +104,11 @@ fn parse_dense_vec<T: Num>(
     capacity: usize,
 ) -> Result<Vec<T>, ErrorReadMtx> {
     let mut v: Vec<T> = Vec::with_capacity(capacity);
-    let mut n = 1;
-    while n > 0 {
-        n = reader.read_line(buf)?;
+    for _ in 0..capacity {
+        let n = reader.read_line(buf)?;
+        if n == 0 {
+            return Err(ErrorReadMtx::EarlyEOF);
+        }
         match T::from_str_radix(buf.trim_end(), 10) {
             Ok(num) => {
                 v.push(num);
@@ -142,9 +158,10 @@ fn parse_sizes<const NDIM: usize>(
             dims[i] = num;
         }
     }
+    println!("buf = {buf}, dims = {dims:?}");
     buf.clear();
     if dims.iter().any(|d| *d == 0) {
-        Err(ErrorReadMtx::EarlySizesHeaderEOF)
+        Err(ErrorReadMtx::EarlySizesHeaderEnd)
     } else {
         Ok((dims, nnz))
     }
@@ -178,6 +195,7 @@ fn parse_banner(
     Ok((is_sparse, sym))
 }
 
+const COMMENT: char = '%';
 fn skip_comments(reader: &mut BufReader<File>, buf: &mut String) -> Result<(), ErrorReadMtx> {
     let mut comment = true;
     while comment {

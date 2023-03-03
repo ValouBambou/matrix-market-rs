@@ -91,7 +91,7 @@ fn parse_sparse_coo<T: Num, const NDIM: usize>(
         if n == 0 {
             return Err(ErrorReadMtx::EarlyEOF);
         }
-        let (coords, val) = parse_coords_val(&buf)?;
+        let (coords, val) = parse_coords_val(buf)?;
         indices.push(coords);
         values.push(val);
         buf.clear();

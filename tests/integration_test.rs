@@ -30,3 +30,18 @@ fn test_read_sparse_sym_big() {
         _dense => panic!("Expected Sparse not Dense"),
     }
 }
+
+#[test]
+fn test_read_dense() {
+    let output: MtxData<i32> = MtxData::from_file("small_dense.mtx").unwrap();
+    use MtxData::*;
+    let expected_values = vec![1, 2, 3, 4, 5, 6];
+    match output {
+        Dense(dims, values, sym) => {
+            assert_eq!(dims, [2, 3], "Dimensions dont match");
+            assert_eq!(values, expected_values, "Values dont match");
+            assert!(matches!(sym, SymInfo::General));
+        }
+        _sparse => panic!("Expected Dense not sparse"),
+    }
+}

@@ -124,22 +124,22 @@ fn parse_dense_vec<T: Num>(
 fn parse_coords_val<T: Num, const NDIM: usize>(
     line: &str,
 ) -> Result<([usize; NDIM], T), ErrorReadMtx> {
-    let mut nnz: Option<T> = None;
+    let mut value: Option<T> = None;
     let mut dims = [0; NDIM];
-    for (i, num) in line.trim_end().split_whitespace().enumerate() {
+    for (i, num) in line.split_whitespace().enumerate() {
         if i == NDIM {
             let num =
                 T::from_str_radix(num, 10).or(Err(ErrorReadMtx::InvalidNum(num.to_owned())))?;
-            nnz = Some(num);
+            value = Some(num);
         } else {
             let num = usize::from_str(num).or(Err(ErrorReadMtx::InvalidNum(num.to_owned())))?;
             dims[i] = num - 1; // mtx is 1 based indexing while rust is 0
         }
     }
-    if nnz.is_none() {
-        Err(ErrorReadMtx::EarlyLineEnd)
+    if let Some(val) = value {
+        Ok((dims, val))
     } else {
-        Ok((dims, nnz.unwrap()))
+        Err(ErrorReadMtx::EarlyLineEnd)
     }
 }
 
@@ -148,7 +148,7 @@ fn parse_sizes<const NDIM: usize>(
 ) -> Result<([usize; NDIM], Option<usize>), ErrorReadMtx> {
     let mut nnz: Option<usize> = None;
     let mut dims = [0; NDIM];
-    for (i, num) in buf.trim_end().split_whitespace().enumerate() {
+    for (i, num) in buf.split_whitespace().enumerate() {
         let num = num
             .parse()
             .or(Err(ErrorReadMtx::InvalidNum(num.to_owned())))?;

@@ -2,7 +2,13 @@
 name = "matrix-market-rs"
 version = "0.1.0"
 edition = "2021"
-
+authors = ["Valentin Trophime"]
+description = "A simple library to read matrix market file to standard rust types."
+readme = "README.md"
+keywords = ["matrix", "parser", "mtx", "mm"]
+categories = ["mathematics", "parsing"]
+license-file = "LICENSE"
+repository = "https://github.com/ValouBambou/matrix-market-rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

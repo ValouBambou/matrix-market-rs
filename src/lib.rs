@@ -1,131 +1,192 @@
-use num_traits::Float;
-use std::str::FromStr;
+use std::{
+    fs::File,
+    io::{self, BufRead, BufReader},
+    str::FromStr,
+};
 
-const ERR_EMPTY: &str = "File is empty (or contains only comments)";
-const ERR_PARSING_INT: &str = "Expected int";
-const ERR_PARSING_FLOAT: &str = "Expected float";
+use num_traits::Num;
 
-fn shape_and_lines_from_content(content: &String) -> (impl Iterator<Item = &str>, Vec<usize>) {
-    let mut lines = content
-        .lines()
-        .map(|line| line.trim())
-        .filter(|line| (!line.starts_with('%')) && (!line.is_empty()));
-    // first line contains shape
-    let shape: Vec<usize> = lines
-        .next()
-        .expect(ERR_EMPTY)
-        .split_whitespace()
-        .map(|len| len.parse().expect(ERR_PARSING_INT))
-        .collect();
-    (lines, shape)
+#[derive(Debug)]
+pub enum ErrorReadMtx {
+    IoError(io::Error),
+    EarlyEOF,
+    EarlyBannerEnd,
+    EarlyLineEnd,
+    EarlySizesHeaderEOF,
+    UnsupportedSym(String),
+    UnsupportedNumType(String),
+    UnsupportedLayout(String),
+    InvalidNum(String),
 }
 
-fn parse_float<F: Float + FromStr>(line: &str) -> F {
-    if let Ok(f) = line.parse::<F>() {
-        f
+impl From<io::Error> for ErrorReadMtx {
+    fn from(value: io::Error) -> Self {
+        ErrorReadMtx::IoError(value)
+    }
+}
+
+pub enum SymInfo {
+    General,
+    Symmetric,
+}
+
+impl FromStr for SymInfo {
+    type Err = ErrorReadMtx;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim_end() {
+            "general" => Ok(SymInfo::General),
+            "symmetric" => Ok(SymInfo::Symmetric),
+            other => Err(ErrorReadMtx::UnsupportedSym(other.to_owned())),
+        }
+    }
+}
+
+pub enum MtxData<T: Num, const NDIM: usize = 2> {
+    Dense([usize; NDIM], Vec<T>, SymInfo),
+    Sparse([usize; NDIM], Vec<[usize; NDIM]>, Vec<T>, SymInfo),
+}
+const COMMENT: char = '%';
+
+impl<T: Num, const NDIM: usize> MtxData<T, NDIM> {
+    pub fn from_file(path: &str) -> Result<Self, ErrorReadMtx> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        let (is_sparse, sym) = parse_banner(&mut reader, &mut line)?;
+        skip_comments(&mut reader, &mut line)?;
+        let (dims, nnz) = parse_sizes(&mut line)?;
+        if is_sparse {
+            let nnz = nnz.ok_or(ErrorReadMtx::EarlySizesHeaderEOF)?;
+            let (indices, values) = parse_sparse_coo(&mut reader, &mut line, nnz)?;
+            Ok(MtxData::Sparse(dims, indices, values, sym))
+        } else {
+            let capacity = dims.iter().product();
+            let values = parse_dense_vec(&mut reader, &mut line, capacity)?;
+            Ok(MtxData::Dense(dims, values, sym))
+        }
+    }
+}
+
+fn parse_sparse_coo<T: Num, const NDIM: usize>(
+    reader: &mut BufReader<File>,
+    buf: &mut String,
+    nnz: usize,
+) -> Result<(Vec<[usize; NDIM]>, Vec<T>), ErrorReadMtx> {
+    let mut values: Vec<T> = Vec::with_capacity(nnz);
+    let mut indices: Vec<[usize; NDIM]> = Vec::with_capacity(nnz);
+    let mut n = reader.read_line(buf)?;
+    while n > 0 {
+        let (coords, val) = parse_coords_val(&buf)?;
+        indices.push(coords);
+        values.push(val);
+        buf.clear();
+        n = reader.read_line(buf)?;
+    }
+    Ok((indices, values))
+}
+fn parse_dense_vec<T: Num>(
+    reader: &mut BufReader<File>,
+    buf: &mut String,
+    capacity: usize,
+) -> Result<Vec<T>, ErrorReadMtx> {
+    let mut v: Vec<T> = Vec::with_capacity(capacity);
+    let mut n = 1;
+    while n > 0 {
+        n = reader.read_line(buf)?;
+        match T::from_str_radix(buf.trim_end(), 10) {
+            Ok(num) => {
+                v.push(num);
+            }
+            Err(_) => {
+                return Err(ErrorReadMtx::InvalidNum(buf.clone()));
+            }
+        }
+        buf.clear();
+    }
+    Ok(v)
+}
+fn parse_coords_val<T: Num, const NDIM: usize>(
+    line: &str,
+) -> Result<([usize; NDIM], T), ErrorReadMtx> {
+    let mut nnz: Option<T> = None;
+    let mut dims = [0; NDIM];
+    for (i, num) in line.trim_end().split_whitespace().enumerate() {
+        if i == NDIM {
+            let num =
+                T::from_str_radix(num, 10).or(Err(ErrorReadMtx::InvalidNum(num.to_owned())))?;
+            nnz = Some(num);
+        } else {
+            let num = usize::from_str(num).or(Err(ErrorReadMtx::InvalidNum(num.to_owned())))?;
+            dims[i] = num - 1; // mtx is 1 based indexing while rust is 0
+        }
+    }
+    if nnz.is_none() {
+        Err(ErrorReadMtx::EarlyLineEnd)
     } else {
-        panic!("{ERR_PARSING_FLOAT}, not {line}");
+        Ok((dims, nnz.unwrap()))
     }
 }
-fn parse_dense<F: Float + FromStr>(content: String) -> (Vec<usize>, Vec<F>) {
-    let (lines, shape) = shape_and_lines_from_content(&content);
-    // next lines contains values in a column major order for dense matrix
-    let values: Vec<F> = lines.map(parse_float).collect();
-    (shape, values)
+
+fn parse_sizes<const NDIM: usize>(
+    buf: &mut String,
+) -> Result<([usize; NDIM], Option<usize>), ErrorReadMtx> {
+    let mut nnz: Option<usize> = None;
+    let mut dims = [0; NDIM];
+    for (i, num) in buf.trim_end().split_whitespace().enumerate() {
+        let num = num
+            .parse()
+            .or(Err(ErrorReadMtx::InvalidNum(num.to_owned())))?;
+        if i == NDIM {
+            nnz = Some(num);
+        } else {
+            dims[i] = num;
+        }
+    }
+    buf.clear();
+    if dims.iter().any(|d| *d == 0) {
+        Err(ErrorReadMtx::EarlySizesHeaderEOF)
+    } else {
+        Ok((dims, nnz))
+    }
 }
 
-pub fn dense_from_file<F: Float + FromStr>(path: &str) -> (Vec<usize>, Vec<F>) {
-    let content = std::fs::read_to_string(path).unwrap();
-    parse_dense(content)
+fn parse_banner(
+    reader: &mut BufReader<File>,
+    buf: &mut String,
+) -> Result<(bool, SymInfo), ErrorReadMtx> {
+    let n = reader.read_line(buf)?;
+    if n == 0 {
+        return Err(ErrorReadMtx::EarlyEOF);
+    }
+
+    // usually a banner look like this
+    // %%MatrixMarket matrix coordinate integer symmetric
+    // so we skip the 2 first fields and parse the next
+    let mut banner = buf.split_whitespace().skip(2);
+    let is_sparse = banner
+        .next()
+        .map(|c| c == "coordinate")
+        .ok_or_else(|| ErrorReadMtx::EarlyBannerEnd)?;
+    // so we skip the type since this already given with generic T
+    let _type = banner.next().ok_or_else(|| ErrorReadMtx::EarlyBannerEnd);
+    let sym = banner
+        .next()
+        .map(SymInfo::from_str)
+        .ok_or_else(|| ErrorReadMtx::EarlyBannerEnd)??;
+    buf.clear();
+
+    Ok((is_sparse, sym))
 }
 
-fn parse_sparse<F: Float + FromStr>(content: String) -> (Vec<usize>, Vec<Vec<usize>>, Vec<F>) {
-    let (lines, mut shape) = shape_and_lines_from_content(&content);
-    // but last number is the number of non zeros
-    let len_nonzeros = shape.pop().unwrap();
-    let mut nonzeros: Vec<F> = Vec::with_capacity(len_nonzeros);
-    let mut indices: Vec<Vec<usize>> = Vec::with_capacity(len_nonzeros);
-    for line in lines {
-        let mut it: Vec<&str> = line.split_whitespace().collect();
-        let value = parse_float(it.pop().unwrap());
-        nonzeros.push(value);
-        let index: Vec<usize> = it
-            .into_iter()
-            .map(|x| x.parse::<usize>().expect(ERR_PARSING_INT) - 1)
-            .collect();
-        indices.push(index)
+fn skip_comments(reader: &mut BufReader<File>, buf: &mut String) -> Result<(), ErrorReadMtx> {
+    let mut comment = true;
+    while comment {
+        buf.clear();
+        let n = reader.read_line(buf)?;
+        comment = buf.starts_with(COMMENT);
+        if n == 0 {
+            return Err(ErrorReadMtx::EarlyEOF);
+        }
     }
-    (shape, indices, nonzeros)
-}
-
-pub fn sparse_from_file<F: Float + FromStr>(path: &str) -> (Vec<usize>, Vec<Vec<usize>>, Vec<F>) {
-    let content = std::fs::read_to_string(path).unwrap();
-    parse_sparse(content)
-}
-
-#[cfg(test)]
-mod tests_mm_parse {
-    use super::*;
-    #[test]
-    #[should_panic(expected = "Expected int")]
-    fn test_fail_parse_shape() {
-        let content = "some garbage content".to_owned();
-        parse_dense::<f32>(content);
-    }
-
-    #[test]
-    #[should_panic(expected = "File is empty (or contains only comments)")]
-    fn test_fail_parse_empty() {
-        let content = "% some comment\n\n\t\n% another comment".to_owned();
-        parse_dense::<f32>(content);
-    }
-
-    #[test]
-    #[should_panic(expected = "Expected float")]
-    fn test_fail_parse_dense() {
-        let content = "% some comment\n10 10\n0.0\ngarbage".to_owned();
-        parse_dense::<f32>(content);
-    }
-
-    #[test]
-    #[should_panic(expected = "Expected int")]
-    fn test_fail_parse_sparse() {
-        let content = "% some comment\n10 10 2\n1 1 0.42\ngarbage 2 0.7".to_owned();
-        parse_sparse::<f32>(content);
-    }
-
-    #[test]
-    #[should_panic(expected = "Expected float")]
-    fn test_fail_parse_sparse2() {
-        let content = "% some comment\n10 10 2\n1 1 0.42\n6 2 garbage".to_owned();
-        parse_sparse::<f32>(content);
-    }
-    #[test]
-    fn test_parse_sparse() {
-        let content = "10 11 2\n1 1    0.42\n6 2 0.7".to_owned();
-        let (shape, indices, nonzeros) = parse_sparse::<f32>(content);
-        assert_eq!(shape, vec![10, 11], "shape differ from expected");
-        assert_eq!(
-            indices,
-            vec![vec![0, 0], vec![5, 1]],
-            "indices differ from expected"
-        );
-        assert_eq!(
-            nonzeros,
-            vec![0.42, 0.7],
-            "nonzeros values differ from expected"
-        );
-    }
-
-    #[test]
-    fn test_parse_dense() {
-        let content = "2    3\n0.1\n0.2\n0.3\n0.4\n0.5\n0.6".to_owned();
-        let (shape, values) = parse_dense::<f32>(content);
-        assert_eq!(shape, vec![2, 3], "shape differ from expected");
-        assert_eq!(
-            values,
-            vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
-            "values differ from expected"
-        );
-    }
+    Ok(())
 }

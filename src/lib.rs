@@ -91,6 +91,36 @@ pub enum MtxData<T: Num, const NDIM: usize = 2> {
 
 impl<T: Num, const NDIM: usize> MtxData<T, NDIM> {
     /// Build a `MtxData` from a matrix market (usually .mtx) file.
+    ///
+    /// # Example
+    /// ```rust
+    /// use matrix_market_rs::{MtxData, SymInfo, MtxError};
+    /// use std::fs::File;
+    /// use std::io::Write;
+    ///
+    /// fn main() -> Result<(), MtxError> {
+    ///     let mtx_content = r#"
+    ///     %%MatrixMarket matrix coordinate integer symmetric
+    ///     2 2 2
+    ///     1 1 3
+    ///     2 2 4
+    ///     "#;
+    ///    
+    ///     let mut f = File::create("sparse2x2.mtx")?;
+    ///     f.write_all(mtx_content.trim().as_bytes());
+    ///     let shape = [2,2];
+    ///     let indices = vec![[0,0], [1,1]];
+    ///     let nonzeros = vec![3,4];
+    ///     let sym = SymInfo::Symmetric;
+    ///    
+    ///     let sparse:MtxData<i32> = MtxData::from_file("sparse2x2.mtx")?;
+    ///     assert_eq!(sparse, MtxData::Sparse(shape, indices, nonzeros, sym));
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// # Errors
+    ///
     /// It could fail for many reasons but for example:
     /// - File doesn't match the matrix market format.
     /// - an IO error (file not found etc.)
@@ -208,6 +238,7 @@ fn parse_banner(
     // usually a banner look like this
     // %%MatrixMarket matrix coordinate integer symmetric
     // so we skip the 2 first fields and parse the next
+    println!("banner = {buf}");
     let mut banner = buf.split_whitespace().skip(2);
     let is_sparse = banner
         .next()

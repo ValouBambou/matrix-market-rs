@@ -217,7 +217,6 @@ fn parse_sizes<const NDIM: usize>(
             dims[i] = num;
         }
     }
-    println!("buf = {buf}, dims = {dims:?}");
     buf.clear();
     if dims.iter().any(|d| *d == 0) {
         Err(MtxError::EarlySizesHeaderEnd)
@@ -238,7 +237,6 @@ fn parse_banner(
     // usually a banner look like this
     // %%MatrixMarket matrix coordinate integer symmetric
     // so we skip the 2 first fields and parse the next
-    println!("banner = {buf}");
     let mut banner = buf.split_whitespace().skip(2);
     let is_sparse = banner
         .next()

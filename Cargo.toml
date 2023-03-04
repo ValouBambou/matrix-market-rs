@@ -9,6 +9,7 @@ keywords = ["matrix", "parser", "mtx", "mm"]
 categories = ["mathematics", "parsing"]
 license-file = "LICENSE"
 repository = "https://github.com/ValouBambou/matrix-market-rs"
+exclude = ["big.mtx", "small.mtx", "small_dense.mtx"] # dont push test data on the package
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

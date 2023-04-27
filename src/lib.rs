@@ -4,6 +4,7 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader},
     num::ParseIntError,
+    path::Path,
     str::FromStr,
 };
 
@@ -124,7 +125,10 @@ impl<T: Num, const NDIM: usize> MtxData<T, NDIM> {
     /// It could fail for many reasons but for example:
     /// - File doesn't match the matrix market format.
     /// - an IO error (file not found etc.)
-    pub fn from_file(path: &str) -> Result<Self, MtxError> {
+    pub fn from_file<P>(path: P) -> Result<Self, MtxError>
+    where
+        P: AsRef<Path>,
+    {
         let file = File::open(path)?;
         let mut reader = BufReader::new(file);
         let mut line = String::new();

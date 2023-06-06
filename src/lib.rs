@@ -16,7 +16,6 @@ pub enum MtxError {
     IoError(io::Error),
     EarlyEOF,
     EarlyBannerEnd,
-    EarlyLineEnd,
     EarlySizesHeaderEnd,
     UnsupportedSym(String),
     UnsupportedNumType(String),
@@ -201,11 +200,8 @@ fn parse_coords_val<T: Num, const NDIM: usize>(line: &str) -> Result<([usize; ND
             dims[i] = num - 1; // mtx is 1 based indexing while rust is 0
         }
     }
-    if let Some(val) = value {
-        Ok((dims, val))
-    } else {
-        Err(MtxError::EarlyLineEnd)
-    }
+    // value default to 1 in case of "pattern" header
+    Ok((dims, value.unwrap_or(T::one())))
 }
 
 fn parse_sizes<const NDIM: usize>(
